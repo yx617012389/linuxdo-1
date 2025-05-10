@@ -8,6 +8,7 @@ import time
 import functools
 import sys
 import requests
+import re
 from loguru import logger
 from playwright.sync_api import sync_playwright
 from tabulate import tabulate
@@ -37,12 +38,14 @@ os.environ.pop("DYLD_LIBRARY_PATH", None)
 
 USERNAME = os.environ.get("LINUXDO_USERNAME")
 PASSWORD = os.environ.get("LINUXDO_PASSWORD")
+BROWSE_ENABLED = os.environ.get("BROWSE_ENABLED", "true").strip().lower() not in ['false', '0', 'off']
 if not USERNAME:
     USERNAME = os.environ.get('USERNAME')
 if not PASSWORD:
     PASSWORD = os.environ.get('PASSWORD')
-GOTIFY_URL = os.environ.get("GOTIFY_URL")  # 新增环境变量
-GOTIFY_TOKEN = os.environ.get("GOTIFY_TOKEN")  # 新增环境变量
+GOTIFY_URL = os.environ.get("GOTIFY_URL")  # Gotify 服务器地址
+GOTIFY_TOKEN = os.environ.get("GOTIFY_TOKEN")  # Gotify 应用的 API Token
+SC3_PUSH_KEY = os.environ.get("SC3_PUSH_KEY")  # Server酱³ SendKey
 
 HOME_URL = "https://linux.do/"
 LOGIN_URL = "https://linux.do/login"
@@ -119,12 +122,16 @@ class LinuxDoBrowser:
             time.sleep(wait_time)
 
     def run(self):
-        if not self.login():
+        if not self.login(): # 登录
             logger.error("登录失败，程序终止")
             sys.exit(1)  # 使用非零退出码终止整个程序
-        self.click_topic()
-        self.print_connect_info()
-        self.send_gotify_notification()
+        
+        if BROWSE_ENABLED:
+            self.click_topic() # 点击主题
+            logger.info("完成浏览任务")
+            
+        self.print_connect_info() # 打印连接信息
+        self.send_notifications(BROWSE_ENABLED) # 发送通知
 
     def click_like(self, page):
         try:
@@ -161,8 +168,11 @@ class LinuxDoBrowser:
 
         page.close()
 
-    def send_gotify_notification(self):
-        """发送消息到Gotify"""
+    def send_notifications(self, browse_enabled):
+        status_msg = "✅每日登录成功"
+        if browse_enabled:
+            status_msg += " + 浏览任务完成"
+            
         if GOTIFY_URL and GOTIFY_TOKEN:
             try:
                 response = requests.post(
@@ -170,7 +180,7 @@ class LinuxDoBrowser:
                     params={"token": GOTIFY_TOKEN},
                     json={
                         "title": "LINUX DO",
-                        "message": f"✅每日签到成功完成",
+                        "message": status_msg,
                         "priority": 1
                     },
                     timeout=10
@@ -181,6 +191,33 @@ class LinuxDoBrowser:
                 logger.error(f"Gotify推送失败: {str(e)}")
         else:
             logger.info("未配置Gotify环境变量，跳过通知发送")
+
+        if SC3_PUSH_KEY:
+            match = re.match(r"sct(\d+)t", SC3_PUSH_KEY, re.I)
+            if not match:
+                logger.error("❌ SC3_PUSH_KEY格式错误，未获取到UID，无法使用Server酱³推送")
+                return
+
+            uid = match.group(1)
+            url = f'https://{uid}.push.ft07.com/send/{SC3_PUSH_KEY}'
+            params = {
+                "title": "LINUX DO",
+                "desp": status_msg
+            }
+
+            attempts = 5
+            for attempt in range(attempts):
+                try:
+                    response = requests.get(url, params=params, timeout=10)
+                    response.raise_for_status()
+                    logger.success(f"Server酱³推送成功: {response.text}")
+                    break
+                except Exception as e:
+                    logger.error(f"Server酱³推送失败: {str(e)}")
+                    if attempt < attempts - 1:
+                        sleep_time = random.randint(180, 360)
+                        logger.info(f"将在 {sleep_time} 秒后重试...")
+                        time.sleep(sleep_time)
 
 
 if __name__ == "__main__":
